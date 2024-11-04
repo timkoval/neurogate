@@ -1,9 +1,8 @@
-root_dir = "/rootdir"
+root_dir = ""
 root_domain = "localhost:3333"
 certcache_dir = "./certcache"
 cert_email = "tk@gmail.com"
 
 [subdomains]
+root = ""
 site1 = ""
-site2 = ""
-

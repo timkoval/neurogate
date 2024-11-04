@@ -45,7 +45,11 @@ async fn main() -> Result<()> {
         .iter()
         .map(|(name, path)| {
             (
-                format!("{}.{}", name, config.root_domain),
+                if name == "root" {
+                    config.root_domain.clone()
+                } else {
+                    format!("{}.{}", name, config.root_domain)
+                },
                 Router::new().nest_service("/", ServeDir::new(root_path.join(path))),
             )
         })
