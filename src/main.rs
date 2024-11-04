@@ -1,4 +1,10 @@
-use std::{collections::HashMap, convert::Infallible, fs, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -11,56 +17,52 @@ use axum::{
 };
 use log::debug;
 use rustls_acme::{caches::DirCache, AcmeConfig};
+use serde::Deserialize;
 use tokio_stream::StreamExt;
+use toml::Table;
 use tower::{util::BoxCloneService, ServiceExt};
-use tower_http::{services::ServeDir, validate_request::ValidateRequestHeaderLayer};
+use tower_http::services::ServeDir;
 
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
 type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
 
+#[derive(Deserialize, Debug)]
+struct Config {
+    root_dir: String,
+    root_domain: String,
+    certcache_dir: String,
+    cert_email: String,
+    subdomains: HashMap<String, String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let site1_svc = Router::new().nest_service(
-        "/",
-        ServeDir::new("/home/tkoval/neuroland"),
-    );
-    let site2_svc = Router::new().nest_service(
-        "/",
-        ServeDir::new("/home/tkoval/neurogarden"),
-    );
+    let config_str = std::fs::read_to_string("./config.toml").expect("Config file is not provided");
+    let config: Config = toml::from_str(&config_str).expect("Config file is not a valid toml");
+    let root_path = Path::new(&config.root_dir);
+    let subdomains: HashMap<String, Router> = config
+        .subdomains
+        .iter()
+        .map(|(name, path)| {
+            (
+                format!("{}.{}", name, config.root_domain),
+                Router::new().nest_service("/", ServeDir::new(root_path.join(path))),
+            )
+        })
+        .collect();
 
     let debug_mode = !std::env::args().any(|x| x == "--production");
-    let (name_site1, name_site2, external_app) = if debug_mode {
-        (
-            "site1.localhost:3333".to_string(),
-            "site2.localhost:3333".to_string(),
-            "ext.localhost:3333".to_string(),
-        )
-    } else {
-        (
-            "timkoval.rs".to_string(),
-            "neurogarden.timkoval.rs".to_string(),
-            "app.my.domain".to_string(),
-        )
-    };
 
-    let client: Client =
-        hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
-            .build(HttpConnector::new());
-    let rev_proxy_svc = Router::new().nest_service(
-        "/",
-        (|state, req| reverse_proxy_http_handler(8080, state, req)).with_state(client),
-    );
+    // let client: Client =
+    //     hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
+    //         .build(HttpConnector::new());
+    // let rev_proxy_svc = Router::new().nest_service(
+    //     "/",
+    //     (|state, req| reverse_proxy_http_handler(8080, state, req)).with_state(client),
+    // );
     // .layer(ValidateRequestHeaderLayer::basic("user", "super safe pw"));
 
-    let hostname_router = mk_hostname_router(
-        [
-            (name_site1, site1_svc),
-            (name_site2, site2_svc),
-            (external_app, rev_proxy_svc),
-        ]
-        .into(),
-    );
+    let hostname_router = mk_hostname_router(subdomains);
 
     let app = Router::new().nest_service("/", hostname_router);
 
@@ -69,9 +71,9 @@ async fn main() -> Result<()> {
     } else {
         serve_with_tls(
             app,
-            ["timkoval.rs", "neurogarden.timkoval.rs"],
-            "your.mail@something.org",
-            "/home/tkoval/neurogate/certcache",
+            ["timkoval.rs"],
+            &config.cert_email,
+            root_path.join(&config.certcache_dir),
         )
         .await
         .context("Serving with TLS")?;
