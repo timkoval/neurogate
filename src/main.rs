@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     // );
     // .layer(ValidateRequestHeaderLayer::basic("user", "super safe pw"));
 
-    let hostname_router = mk_hostname_router(subdomains);
+    let hostname_router = mk_hostname_router(subdomains.clone());
 
     let app = Router::new().nest_service("/", hostname_router);
 
@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     } else {
         serve_with_tls(
             app,
-            ["timkoval.rs"],
+            subdomains.keys(),
             &config.cert_email,
             root_path.join(&config.certcache_dir),
         )
