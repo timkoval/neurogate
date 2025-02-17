@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let config_str = std::fs::read_to_string("./config.toml").expect("Config file is not provided");
     let config: Config = toml::from_str(&config_str).expect("Config file is not a valid toml");
     let root_path = Path::new(&config.root_dir);
-    let subdomains: HashMap<String, Router> = config
+    let mut subdomains: HashMap<String, Router> = config
         .subdomains
         .iter()
         .map(|(name, path)| {
@@ -57,13 +57,14 @@ async fn main() -> Result<()> {
 
     let debug_mode = !std::env::args().any(|x| x == "--production");
 
-    // let client: Client =
-    //     hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
-    //         .build(HttpConnector::new());
-    // let rev_proxy_svc = Router::new().nest_service(
-    //     "/",
-    //     (|state, req| reverse_proxy_http_handler(8080, state, req)).with_state(client),
-    // );
+    let client: Client =
+        hyper_util::client::legacy::Client::<(), ()>::builder(TokioExecutor::new())
+            .build(HttpConnector::new());
+    let rev_proxy_svc = Router::new().nest_service(
+        "/",
+        (|state, req| reverse_proxy_http_handler(8080, state, req)).with_state(client),
+    );
+    subdomains.insert("mail.timkoval.rs".to_string(), rev_proxy_svc);
     // .layer(ValidateRequestHeaderLayer::basic("user", "super safe pw"));
 
     let hostname_router = mk_hostname_router(subdomains.clone());
