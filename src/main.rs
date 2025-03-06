@@ -20,7 +20,10 @@ use rustls_acme::{caches::DirCache, AcmeConfig};
 use serde::Deserialize;
 use tokio_stream::StreamExt;
 use toml::Table;
-use tower::{util::BoxCloneService, ServiceExt};
+use tower::{
+    util::{BoxCloneService, MapRequestLayer},
+    ServiceExt,
+};
 use tower_http::services::ServeDir;
 
 use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
@@ -69,7 +72,9 @@ async fn main() -> Result<()> {
 
     let hostname_router = mk_hostname_router(subdomains.clone());
 
-    let app = Router::new().nest_service("/", hostname_router);
+    let app = Router::new()
+        .nest_service("/", hostname_router)
+        .layer(MapRequestLayer::new(add_html_extension));
 
     if debug_mode {
         server_locally(app, 3333).await.context("Serving locally")?;
@@ -210,4 +215,26 @@ pub fn mk_hostname_router(
         })
         .into_service(),
     )
+}
+
+fn add_html_extension<B>(req: Request<B>) -> Request<B> {
+    let uri = req.uri();
+    let path = uri.path();
+    let new_path = if !path.ends_with('/') && Path::new(path).extension().is_none() {
+        format!("{}.html", path)
+    } else {
+        path.to_string()
+    };
+    let new_path_and_query = if let Some(query) = uri.query() {
+        format!("{}?{}", new_path, query)
+    } else {
+        new_path
+    };
+    let new_uri = Uri::builder()
+        .path_and_query(new_path_and_query)
+        .build()
+        .unwrap();
+    let (mut parts, body) = req.into_parts();
+    parts.uri = new_uri;
+    Request::from_parts(parts, body)
 }
