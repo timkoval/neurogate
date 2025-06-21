@@ -1,0 +1,65 @@
+From b7aa89f598ddc3c2e0e1b3d9a9db6a59c74283f9 Mon Sep 17 00:00:00 2001
+From: Tim Koval <timkoval00@gmail.com>
+Date: Thu, 6 Mar 2025 23:10:17 +0400
+Subject: [PATCH 1/1] add: `.html` handling middleware
+
+---
+ src/main.rs | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index ac79d00..3871342 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -20,7 +20,10 @@ use rustls_acme::{caches::DirCache, AcmeConfig};
+ use serde::Deserialize;
+ use tokio_stream::StreamExt;
+ use toml::Table;
+-use tower::{util::BoxCloneService, ServiceExt};
++use tower::{
++    util::{BoxCloneService, MapRequestLayer},
++    ServiceExt,
++};
+ use tower_http::services::ServeDir;
+ 
+ use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioExecutor};
+@@ -69,7 +72,9 @@ async fn main() -> Result<()> {
+ 
+     let hostname_router = mk_hostname_router(subdomains.clone());
+ 
+-    let app = Router::new().nest_service("/", hostname_router);
++    let app = Router::new()
++        .nest_service("/", hostname_router)
++        .layer(MapRequestLayer::new(add_html_extension));
+ 
+     if debug_mode {
+         server_locally(app, 3333).await.context("Serving locally")?;
+@@ -211,3 +216,25 @@ pub fn mk_hostname_router(
+         .into_service(),
+     )
+ }
++
++fn add_html_extension<B>(req: Request<B>) -> Request<B> {
++    let uri = req.uri();
++    let path = uri.path();
++    let new_path = if !path.ends_with('/') && Path::new(path).extension().is_none() {
++        format!("{}.html", path)
++    } else {
++        path.to_string()
++    };
++    let new_path_and_query = if let Some(query) = uri.query() {
++        format!("{}?{}", new_path, query)
++    } else {
++        new_path
++    };
++    let new_uri = Uri::builder()
++        .path_and_query(new_path_and_query)
++        .build()
++        .unwrap();
++    let (mut parts, body) = req.into_parts();
++    parts.uri = new_uri;
++    Request::from_parts(parts, body)
++}
+-- 
+2.47.2
+
