@@ -1,8 +1,7 @@
 root_dir = ""
-root_domain = "localhost:3333"
 certcache_dir = "./certcache"
 cert_email = "tk@gmail.com"
 
-[subdomains]
-root = ""
-site1 = ""
+[domains]
+"localhost:3333" = { root = "", site1 = "" }
+# "example.com" = { root = "/var/www/example", blog = "/var/www/blog" }

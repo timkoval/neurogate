@@ -19,7 +19,6 @@ use log::debug;
 use rustls_acme::{caches::DirCache, AcmeConfig};
 use serde::Deserialize;
 use tokio_stream::StreamExt;
-use toml::Table;
 use tower::{
     util::{BoxCloneService, MapRequestLayer},
     ServiceExt,
@@ -32,10 +31,9 @@ type Client = hyper_util::client::legacy::Client<HttpConnector, Body>;
 #[derive(Deserialize, Debug)]
 struct Config {
     root_dir: String,
-    root_domain: String,
     certcache_dir: String,
     cert_email: String,
-    subdomains: HashMap<String, String>,
+    domains: HashMap<String, HashMap<String, String>>, // key: root_domain, value: subdomain -> path
 }
 
 #[tokio::main]
@@ -43,20 +41,17 @@ async fn main() -> Result<()> {
     let config_str = std::fs::read_to_string("./config.toml").expect("Config file is not provided");
     let config: Config = toml::from_str(&config_str).expect("Config file is not a valid toml");
     let root_path = Path::new(&config.root_dir);
-    let mut subdomains: HashMap<String, Router> = config
-        .subdomains
-        .iter()
-        .map(|(name, path)| {
-            (
-                if name == "root" {
-                    config.root_domain.clone()
-                } else {
-                    format!("{}.{}", name, config.root_domain)
-                },
-                Router::new().nest_service("/", ServeDir::new(root_path.join(path))),
-            )
-        })
-        .collect();
+    let mut hostname_to_router: HashMap<String, Router> = HashMap::new();
+    for (root_domain, subdomains) in &config.domains {
+        for (name, path) in subdomains {
+            let hostname = if name == "root" {
+                root_domain.clone()
+            } else {
+                format!("{}.{}", name, root_domain)
+            };
+            hostname_to_router.insert(hostname, Router::new().nest_service("/", ServeDir::new(root_path.join(path))));
+        }
+    }
 
     let debug_mode = !std::env::args().any(|x| x == "--production");
 
@@ -67,10 +62,10 @@ async fn main() -> Result<()> {
         "/",
         (|state, req| reverse_proxy_http_handler(8080, state, req)).with_state(client),
     );
-    subdomains.insert("mail.timkoval.rs".to_string(), rev_proxy_svc);
+    hostname_to_router.insert("mail.timkoval.rs".to_string(), rev_proxy_svc);
     // .layer(ValidateRequestHeaderLayer::basic("user", "super safe pw"));
 
-    let hostname_router = mk_hostname_router(subdomains.clone());
+    let hostname_router = mk_hostname_router(hostname_to_router.clone());
 
     let app = Router::new()
         .nest_service("/", hostname_router)
@@ -81,7 +76,7 @@ async fn main() -> Result<()> {
     } else {
         serve_with_tls(
             app,
-            subdomains.keys(),
+            hostname_to_router.keys(),
             &config.cert_email,
             root_path.join(&config.certcache_dir),
         )
@@ -237,4 +232,70 @@ fn add_html_extension<B>(req: Request<B>) -> Request<B> {
     let (mut parts, body) = req.into_parts();
     parts.uri = new_uri;
     Request::from_parts(parts, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    #[test]
+    fn test_config_parsing() {
+        let config_str = r#"
+root_dir = "/var/www"
+certcache_dir = "./certcache"
+cert_email = "test@example.com"
+
+[domains]
+"example.com" = { root = "/var/www/example", blog = "/var/www/blog" }
+"another.com" = { root = "/var/www/another" }
+"#;
+
+        let config: Config = toml::from_str(config_str).unwrap();
+        assert_eq!(config.root_dir, "/var/www");
+        assert_eq!(config.cert_email, "test@example.com");
+        assert!(config.domains.contains_key("example.com"));
+        assert!(config.domains.contains_key("another.com"));
+        assert_eq!(config.domains["example.com"]["root"], "/var/www/example");
+        assert_eq!(config.domains["example.com"]["blog"], "/var/www/blog");
+        assert_eq!(config.domains["another.com"]["root"], "/var/www/another");
+    }
+
+    #[tokio::test]
+    async fn test_hostname_router() {
+        let mut map = HashMap::new();
+        map.insert("example.com".to_string(), Router::new().route("/", axum::routing::get(|| async { "root" })));
+        map.insert("blog.example.com".to_string(), Router::new().route("/", axum::routing::get(|| async { "blog" })));
+
+        let router = mk_hostname_router(map);
+
+        // Test root domain
+        let req = Request::builder()
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Test subdomain
+        let req = Request::builder()
+            .uri("http://blog.example.com/")
+            .header("host", "blog.example.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+
+        // Test unknown domain
+        let req = Request::builder()
+            .uri("http://unknown.com/")
+            .header("host", "unknown.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
 }
